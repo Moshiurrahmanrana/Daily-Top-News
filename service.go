@@ -21,12 +21,18 @@ type NewsService struct {
 
 // NewNewsService creates a new news service instance
 func NewNewsService() *NewsService {
-	// Initialize news sources - only The Daily Star
+	// Initialize news sources - only The Daily Star and CNN
 	sources := map[string]Source{
 		"thedailystar": {
 			Name:        "thedailystar",
 			DisplayName: "The Daily Star",
 			URL:         "https://www.thedailystar.net/",
+			Active:      true,
+		},
+		"cnn": {
+			Name:        "cnn",
+			DisplayName: "CNN",
+			URL:         "https://edition.cnn.com/",
 			Active:      true,
 		},
 	}
@@ -153,6 +159,9 @@ func (ns *NewsService) fetchNewsFromSource(sourceName, url string) ([]NewsArticl
 	// Only handle The Daily Star
 	if sourceName == "thedailystar" {
 		return ns.fetchTheDailyStarWithColly(url)
+	}
+	if sourceName == "cnn" {
+		return ns.fetchCNNWithColly(url)
 	}
 
 	return nil, fmt.Errorf("unsupported source: %s", sourceName)
@@ -293,6 +302,97 @@ func (ns *NewsService) fetchTheDailyStarWithColly(url string) ([]NewsArticle, er
 	err := c.Visit(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to visit: %v", err)
+	}
+
+	// Wait for all requests to complete
+	c.Wait()
+
+	// Update missing image URLs by scraping individual article pages
+	ns.updateMissingImageURLs(&articles)
+
+	return articles, nil
+}
+
+// fetchCNNWithColly fetches news from CNN using Colly
+func (ns *NewsService) fetchCNNWithColly(url string) ([]NewsArticle, error) {
+	// Initialize a slice to store articles
+	articles := []NewsArticle{}
+
+	// Create a new Colly collector
+	c := colly.NewCollector(
+		colly.AllowedDomains("edition.cnn.com", "cnn.com"),
+		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"),
+		colly.MaxDepth(1),
+	)
+
+	// Add rate limiting
+	c.Limit(&colly.LimitRule{
+		DomainGlob:  "*.cnn.com",
+		Delay:       2 * time.Second,
+		RandomDelay: 1 * time.Second,
+	})
+
+	// Counter for article IDs
+	articleID := 0
+
+	// OnHTML callback for article containers
+	c.OnHTML("a[data-link-type='article']", func(e *colly.HTMLElement) {
+		if len(articles) >= 15 { // Limit to 15 articles for CNN
+			return
+		}
+
+		link := e.Request.AbsoluteURL(e.Attr("href"))
+
+		// Skip duplicates by URL
+		for _, article := range articles {
+			if article.URL == link {
+				return
+			}
+		}
+
+		var title string
+		// CNN uses spans with data-editable="headline" for many titles
+		title = e.ChildText("span[data-editable='headline']")
+		if title == "" {
+			// Fallback for different card styles
+			title = e.ChildText(".container__headline-text")
+		}
+		title = strings.TrimSpace(title)
+
+		if title == "" || len(title) < 10 {
+			return
+		}
+
+		// Skip duplicates by Title
+		for _, article := range articles {
+			if article.Title == title {
+				return
+			}
+		}
+
+		article := NewsArticle{
+			ID:          fmt.Sprintf("cnn_%d", articleID),
+			Title:       title,
+			Description: "", // Description is not easily available on the homepage
+			ImageURL:    "", // Will be fetched by updateMissingImageURLs
+			URL:         link,
+			Source:      "cnn",
+			PublishedAt: time.Now(),
+		}
+
+		articles = append(articles, article)
+		articleID++
+	})
+
+	// OnError callback to handle errors
+	c.OnError(func(r *colly.Response, err error) {
+		log.Printf("Error scraping CNN: %v, Status Code: %d", err, r.StatusCode)
+	})
+
+	// Start scraping the homepage
+	err := c.Visit(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to visit CNN: %v", err)
 	}
 
 	// Wait for all requests to complete
