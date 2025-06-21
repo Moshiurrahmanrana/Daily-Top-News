@@ -308,7 +308,9 @@ func (ns *NewsService) fetchTheDailyStarWithColly(url string) ([]NewsArticle, er
 	c.Wait()
 
 	// Update missing image URLs by scraping individual article pages
-	ns.updateMissingImageURLs(&articles)
+	//ns.updateMissingImageURLs(&articles)
+	//ns.updateMissingImageURLs(&articles)
+	ns.updateArticleDetails(&articles)
 
 	return articles, nil
 }
@@ -399,29 +401,35 @@ func (ns *NewsService) fetchCNNWithColly(url string) ([]NewsArticle, error) {
 	c.Wait()
 
 	// Update missing image URLs by scraping individual article pages
-	ns.updateMissingImageURLs(&articles)
+	ns.updateArticleDetails(&articles)
 
 	return articles, nil
 }
 
-// updateMissingImageURLs updates empty image_url fields by scraping from the article URL
-func (ns *NewsService) updateMissingImageURLs(articles *[]NewsArticle) {
+// updateArticleDetails updates empty image_url and description fields by scraping from the article URL
+func (ns *NewsService) updateArticleDetails(articles *[]NewsArticle) {
 	for i := range *articles {
-		if (*articles)[i].ImageURL == "" {
-			imageURL, err := ns.scrapeImageFromURL((*articles)[i].URL)
+		article := &(*articles)[i]
+		if article.ImageURL == "" || article.Description == "" {
+			imageURL, description, err := ns.scrapeArticleDetailsFromURL(article.URL)
 			if err != nil {
-				log.Printf("Error scraping image: %v", err)
+				log.Printf("Error scraping details for %s: %v", article.URL, err)
 				continue
 			}
-			(*articles)[i].ImageURL = imageURL
+			if article.ImageURL == "" && imageURL != "" {
+				article.ImageURL = imageURL
+			}
+			if article.Description == "" && description != "" {
+				article.Description = description
+			}
 			// Add delay to avoid overwhelming the server
 			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
-// scrapeImageFromURL fetches an image URL from the given webpage
-func (ns *NewsService) scrapeImageFromURL(url string) (string, error) {
+// scrapeArticleDetailsFromURL fetches an image URL and description from the given webpage
+func (ns *NewsService) scrapeArticleDetailsFromURL(url string) (string, string, error) {
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -430,7 +438,7 @@ func (ns *NewsService) scrapeImageFromURL(url string) (string, error) {
 	// Make HTTP GET request
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %v", err)
+		return "", "", fmt.Errorf("failed to create request: %v", err)
 	}
 
 	// Set User-Agent to avoid being blocked
@@ -438,61 +446,74 @@ func (ns *NewsService) scrapeImageFromURL(url string) (string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch URL %s: %v", url, err)
+		return "", "", fmt.Errorf("failed to fetch URL %s: %v", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return "", "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	// Parse HTML using goquery
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse HTML: %v", err)
+		return "", "", fmt.Errorf("failed to parse HTML: %v", err)
 	}
 
-	// Try to find image in <picture> tag (data-srcset)
+	// --- Scrape Image URL ---
 	imageURL := ""
 	doc.Find("picture img").Each(func(i int, s *goquery.Selection) {
 		if src, exists := s.Attr("data-srcset"); exists && imageURL == "" {
 			imageURL = src
 		}
 	})
-	if imageURL != "" {
-		return imageURL, nil
+	if imageURL == "" {
+		doc.Find("span.lg-gallery").Each(func(i int, s *goquery.Selection) {
+			if src, exists := s.Attr("data-src"); exists && imageURL == "" {
+				imageURL = src
+			}
+		})
+	}
+	if imageURL == "" {
+		doc.Find("meta[property='og:image']").Each(func(i int, s *goquery.Selection) {
+			if content, exists := s.Attr("content"); exists && imageURL == "" {
+				imageURL = content
+			}
+		})
+	}
+	if imageURL == "" {
+		doc.Find("article img, div.section-media img").Each(func(i int, s *goquery.Selection) {
+			if src, exists := s.Attr("src"); exists && imageURL == "" {
+				imageURL = src
+			}
+		})
 	}
 
-	// Fallback: Try to find image in lg-gallery span (data-src)
-	doc.Find("span.lg-gallery").Each(func(i int, s *goquery.Selection) {
-		if src, exists := s.Attr("data-src"); exists && imageURL == "" {
-			imageURL = src
+	// --- Scrape Description ---
+	description := ""
+	doc.Find("meta[property='og:description']").Each(func(i int, s *goquery.Selection) {
+		if content, exists := s.Attr("content"); exists && description == "" {
+			description = strings.TrimSpace(content)
 		}
 	})
-	if imageURL != "" {
-		return imageURL, nil
+	if description == "" {
+		doc.Find("meta[name='description']").Each(func(i int, s *goquery.Selection) {
+			if content, exists := s.Attr("content"); exists && description == "" {
+				description = strings.TrimSpace(content)
+			}
+		})
+	}
+	if description == "" {
+		doc.Find(".article__content p, .article-body p, .paragraph, .zn-body__paragraph").Each(func(i int, s *goquery.Selection) {
+			if pText := strings.TrimSpace(s.Text()); len(pText) > 50 && description == "" {
+				description = pText
+			}
+		})
 	}
 
-	// Fallback: Try to find Open Graph image
-	doc.Find("meta[property='og:image']").Each(func(i int, s *goquery.Selection) {
-		if content, exists := s.Attr("content"); exists && imageURL == "" {
-			imageURL = content
-		}
-	})
-	if imageURL != "" {
-		return imageURL, nil
+	if description != "" && len(description) > 200 {
+		description = description[:200] + "..."
 	}
 
-	// Fallback: Find the first image in the article body
-	doc.Find("article img, div.section-media img").Each(func(i int, s *goquery.Selection) {
-		if src, exists := s.Attr("src"); exists && imageURL == "" {
-			imageURL = src
-		}
-	})
-
-	if imageURL != "" {
-		return imageURL, nil
-	}
-
-	return "", fmt.Errorf("no image found on page: %s", url)
+	return imageURL, description, nil
 } 
