@@ -518,4 +518,9 @@ func (ns *NewsService) scrapeArticleDetailsFromURL(url string) (string, string, 
 	}
 
 	return imageURL, description, nil
+}
+
+// ServiceHealth is a simple exported function to satisfy Vercel's requirement
+func ServiceHealth() string {
+	return "News service is healthy"
 } 
