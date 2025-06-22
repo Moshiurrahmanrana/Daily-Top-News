@@ -1,4 +1,4 @@
-package handler
+package models
 
 import "time"
 

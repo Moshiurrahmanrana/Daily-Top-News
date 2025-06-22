@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"top-news/models"
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gin-gonic/gin"
 	"github.com/gocolly/colly/v2"
@@ -15,14 +17,14 @@ import (
 
 // NewsService handles news fetching operations
 type NewsService struct {
-	sources map[string]Source
+	sources map[string]models.Source
 	client  *http.Client
 }
 
 // NewNewsService creates a new news service instance
 func NewNewsService() *NewsService {
 	// Initialize news sources - only The Daily Star and CNN
-	sources := map[string]Source{
+	sources := map[string]models.Source{
 		"thedailystar": {
 			Name:        "thedailystar",
 			DisplayName: "The Daily Star",
@@ -54,7 +56,7 @@ func NewNewsService() *NewsService {
 // GetAllNews fetches news from all active sources
 func (ns *NewsService) GetAllNews(c *gin.Context) {
 	var wg sync.WaitGroup
-	allNews := make(chan []NewsArticle, len(ns.sources))
+	allNews := make(chan []models.NewsArticle, len(ns.sources))
 	
 	// Fetch news from all sources concurrently
 	for name, source := range ns.sources {
@@ -63,12 +65,12 @@ func (ns *NewsService) GetAllNews(c *gin.Context) {
 		}
 		
 		wg.Add(1)
-		go func(sourceName string, source Source) {
+		go func(sourceName string, source models.Source) {
 			defer wg.Done()
 			news, err := ns.fetchNewsFromSource(sourceName, source.URL)
 			if err != nil {
 				log.Printf("Error fetching from %s: %v", sourceName, err)
-				allNews <- []NewsArticle{}
+				allNews <- []models.NewsArticle{}
 				return
 			}
 			allNews <- news
@@ -82,12 +84,12 @@ func (ns *NewsService) GetAllNews(c *gin.Context) {
 	}()
 
 	// Collect all news
-	var allArticles []NewsArticle
+	var allArticles []models.NewsArticle
 	for news := range allNews {
 		allArticles = append(allArticles, news...)
 	}
 
-	response := NewsResponse{
+	response := models.NewsResponse{
 		Success: true,
 		Data:    allArticles,
 		Count:   len(allArticles),
@@ -102,7 +104,7 @@ func (ns *NewsService) GetNewsBySource(c *gin.Context) {
 	
 	source, exists := ns.sources[sourceName]
 	if !exists {
-		c.JSON(http.StatusNotFound, ErrorResponse{
+		c.JSON(http.StatusNotFound, models.ErrorResponse{
 			Success: false,
 			Error:   "source_not_found",
 			Message: "News source not found",
@@ -111,7 +113,7 @@ func (ns *NewsService) GetNewsBySource(c *gin.Context) {
 	}
 
 	if !source.Active {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Success: false,
 			Error:   "source_inactive",
 			Message: "News source is currently inactive",
@@ -121,7 +123,7 @@ func (ns *NewsService) GetNewsBySource(c *gin.Context) {
 
 	news, err := ns.fetchNewsFromSource(sourceName, source.URL)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Success: false,
 			Error:   "fetch_error",
 			Message: fmt.Sprintf("Failed to fetch news: %v", err),
@@ -129,7 +131,7 @@ func (ns *NewsService) GetNewsBySource(c *gin.Context) {
 		return
 	}
 
-	response := NewsResponse{
+	response := models.NewsResponse{
 		Success: true,
 		Data:    news,
 		Count:   len(news),
@@ -141,12 +143,12 @@ func (ns *NewsService) GetNewsBySource(c *gin.Context) {
 
 // GetAvailableSources returns all available news sources
 func (ns *NewsService) GetAvailableSources(c *gin.Context) {
-	var sources []Source
+	var sources []models.Source
 	for _, source := range ns.sources {
 		sources = append(sources, source)
 	}
 
-	response := SourcesResponse{
+	response := models.SourcesResponse{
 		Success: true,
 		Sources: sources,
 	}
@@ -155,7 +157,7 @@ func (ns *NewsService) GetAvailableSources(c *gin.Context) {
 }
 
 // fetchNewsFromSource fetches news from a specific source
-func (ns *NewsService) fetchNewsFromSource(sourceName, url string) ([]NewsArticle, error) {
+func (ns *NewsService) fetchNewsFromSource(sourceName, url string) ([]models.NewsArticle, error) {
 	// Only handle The Daily Star
 	if sourceName == "thedailystar" {
 		return ns.fetchTheDailyStarWithColly(url)
@@ -168,9 +170,9 @@ func (ns *NewsService) fetchNewsFromSource(sourceName, url string) ([]NewsArticl
 }
 
 // fetchTheDailyStarWithColly fetches news from The Daily Star using Colly
-func (ns *NewsService) fetchTheDailyStarWithColly(url string) ([]NewsArticle, error) {
+func (ns *NewsService) fetchTheDailyStarWithColly(url string) ([]models.NewsArticle, error) {
 	// Initialize a slice to store articles
-	articles := []NewsArticle{}
+	articles := []models.NewsArticle{}
 
 	// Create a new Colly collector
 	c := colly.NewCollector(
@@ -279,7 +281,7 @@ func (ns *NewsService) fetchTheDailyStarWithColly(url string) ([]NewsArticle, er
 		}
 
 		// Create NewsArticle struct
-		article := NewsArticle{
+		article := models.NewsArticle{
 			ID:          fmt.Sprintf("dailystar_%d", articleID),
 			Title:       title,
 			Description: description,
@@ -316,9 +318,9 @@ func (ns *NewsService) fetchTheDailyStarWithColly(url string) ([]NewsArticle, er
 }
 
 // fetchCNNWithColly fetches news from CNN using Colly
-func (ns *NewsService) fetchCNNWithColly(url string) ([]NewsArticle, error) {
+func (ns *NewsService) fetchCNNWithColly(url string) ([]models.NewsArticle, error) {
 	// Initialize a slice to store articles
-	articles := []NewsArticle{}
+	articles := []models.NewsArticle{}
 
 	// Create a new Colly collector
 	c := colly.NewCollector(
@@ -372,7 +374,7 @@ func (ns *NewsService) fetchCNNWithColly(url string) ([]NewsArticle, error) {
 			}
 		}
 
-		article := NewsArticle{
+		article := models.NewsArticle{
 			ID:          fmt.Sprintf("cnn_%d", articleID),
 			Title:       title,
 			Description: "", // Description is not easily available on the homepage
@@ -407,7 +409,7 @@ func (ns *NewsService) fetchCNNWithColly(url string) ([]NewsArticle, error) {
 }
 
 // updateArticleDetails updates empty image_url and description fields by scraping from the article URL
-func (ns *NewsService) updateArticleDetails(articles *[]NewsArticle) {
+func (ns *NewsService) updateArticleDetails(articles *[]models.NewsArticle) {
 	for i := range *articles {
 		article := &(*articles)[i]
 		if article.ImageURL == "" || article.Description == "" {
